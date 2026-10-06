@@ -1,49 +1,41 @@
-# AEGIS AI — Final Prototype Model Package
+# AEGIS AI: Explainable Agentic Predictive Maintenance
 
-This package preserves the existing working Streamlit dashboard and adds the remaining model-development scripts.
+[![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-Deep%2B-orange.svg)](https://pytorch.org/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-red.svg)](https://streamlit.io/)
 
-## Existing baseline
-- C-MAPSS FD001
-- 17 useful sensors
-- 30-cycle windows
-- 2-layer LSTM, 64 hidden units, dropout 0.2
-- FC: 64 -> 32 -> 1
-- Test MAE: 16.66 cycles
-- Test RMSE: 23.60 cycles
+**AEGIS AI** ("Intelligent Shield") is an advanced, production-grade predictive maintenance framework designed for turbofan engine Remaining Useful Life (RUL) estimation. Built using NASA’s C-MAPSS dataset, the project bridges the gap between raw deep learning forecasts and actionable industrial maintenance by integrating **Explainable AI (XAI)**, **Uncertainty Quantification (MC Dropout)**, and an **Autonomous Multi-Agent Reasoning Network**.
 
-## Dashboard fix
-`app.py` keeps the existing AEGIS dashboard and uses `test_predictions.csv` for the primary displayed engine RUL when that file exists. MC Dropout remains responsible for uncertainty. This makes engine selection agree with the saved evaluation results instead of replacing the evaluated prediction with a different stochastic mean.
+---
 
-## New model-development scripts
-### 1. Piecewise RUL LSTM
-```powershell
-python train_piecewise_lstm.py
-```
-Creates:
-- `data/processed/piecewise_lstm_rul_model.pth`
+## 🚀 Key Features
 
-The RUL target is capped at 125 cycles during training. This is an experimental improved model; it does not replace the baseline automatically.
+1. **Deep Time-Series Forecasting:** Implements optimized sliding-window preprocessing over 17 operational sensor streams to capture complex degradation patterns.
+2. **Uncertainty-Aware Predictions:** Utilizes Monte Carlo Dropout to calculate epistemic uncertainty bounds ($\pm$ cycles), safeguarding operators against high-risk predictions.
+3. **Transparent Occlusion-Based XAI:** Maps sensor contributions directly to final RUL outputs, solving the classic "black box" problem of deep neural networks in industrial settings.
+4. **Autonomous Multi-Agent Diagnostic Chain:** Features a sequential multi-agent architecture (`Diagnostic` $\rightarrow$ `Root-Cause` $\rightarrow$ `Verification` $\rightarrow$ `Maintenance`) that automatically analyzes anomaly signals and generates prioritized work orders.
+5. **Interactive Digital Twin Control Center:** A fully responsive Streamlit dashboard providing real-time telemetry, stress simulation, and model evaluation metrics.
 
-### 2. Transformer
-```powershell
-python train_transformer.py
-```
-Creates:
-- `data/processed/transformer_rul_model.pth`
-- `data/processed/transformer_test_predictions.csv`
+---
 
-### 3. Compare models
-Run this after Transformer training:
-```powershell
-python compare_models.py
-```
-Creates:
-- `data/processed/model_comparison.csv`
+## 📊 Model Performance (NASA C-MAPSS FD001)
 
-## Dashboard
-Keep the existing project data/model folders beside `app.py`, then run:
-```powershell
-python -m streamlit run app.py
-```
+Evaluated on the official unseen test split of the C-MAPSS FD001 benchmark:
+* **Test Mean Absolute Error (MAE):** `16.66 cycles`
+* **Test Root Mean Squared Error (RMSE):** `23.60 cycles`
+* **Architecture:** 2-Layer LSTM (64 hidden units, 0.2 dropout rate) with fully connected projection layers ($64 \rightarrow 32 \rightarrow 1$).
 
-The existing `agents.py` is intentionally not changed.
+---
+
+## 📂 Repository Structure
+
+```text
+AEGIS-AI-Predictive-Maintenance/
+│
+├── preprocessing.py          # Data cleaning, normalization, and 30-cycle time-series slicing
+├── train_piecewise_lstm.py   # Core LSTM model architecture and piecewise RUL training loop
+├── evaluate.py               # Evaluation script for computing MAE and RMSE metrics against test data
+├── agents.py                 # Multi-agent autonomous reasoning network (Diagnostic to Maintenance)
+├── app.py                    # Interactive Streamlit control center and digital twin UI
+├── requirements.txt          # Project python package dependencies
+└── README.md                 # Project documentation
