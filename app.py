@@ -1,4 +1,5 @@
 import os
+import json
 import html
 import numpy as np
 import pandas as pd
@@ -9,6 +10,13 @@ import plotly.graph_objects as go
 import joblib
 
 from agents import run_agent_pipeline
+from mc_utils import (
+    mc_dropout_predict,
+    prediction_interval,
+    MC_PASSES,
+    DEFAULT_LEVEL,
+    INTERVAL_LABEL,
+)
 
 
 # ============================================================
@@ -754,7 +762,7 @@ recent = engine.tail(30)
 
 raw_values = recent[sensors].values
 
-scaled = scaler.transform(raw_values)
+scaled = scaler.transform(recent[sensors])
 
 input_tensor = torch.tensor(
     scaled,
@@ -766,47 +774,6 @@ input_tensor = torch.tensor(
 # MC DROPOUT
 # ============================================================
 
-def mc_prediction(
-    model,
-    x,
-    passes=50
-):
-
-    model.eval()
-
-    for module in model.modules():
-
-        if isinstance(module, nn.Dropout):
-            module.train()
-
-    predictions = []
-
-    with torch.no_grad():
-
-        for _ in range(passes):
-
-            predictions.append(
-                model(x).item()
-            )
-
-    model.eval()
-
-    predictions = np.array(predictions)
-
-    mean = float(predictions.mean())
-
-    std = float(predictions.std())
-
-    lower = max(
-        0,
-        mean - 1.96 * std
-    )
-
-    upper = mean + 1.96 * std
-
-    return mean, std, lower, upper
-
-
 prediction_csv = os.path.join(
     BASE_DIR,
     "data",
@@ -814,26 +781,35 @@ prediction_csv = os.path.join(
     "test_predictions.csv"
 )
 
-mc_mean, uncertainty, lower, upper = mc_prediction(
-    model,
-    input_tensor
+COVERAGE_JSON = os.path.join(
+    BASE_DIR,
+    "data",
+    "processed",
+    "coverage_summary.json"
 )
 
-predicted_rul = float(mc_mean)
+# ONE shared, seeded MC Dropout run per engine window. Everything below
+# (headline number, chart, agents, work order) uses this same result.
+mc_result = mc_dropout_predict(
+    model,
+    scaled,
+    int(selected_engine),
+    current_cycle,
+    passes=MC_PASSES
+)
 
-if os.path.exists(prediction_csv):
-    try:
-        prediction_df = pd.read_csv(prediction_csv)
-        match = prediction_df[
-            prediction_df["Engine"].astype(int) == int(selected_engine)
-        ]
-        if not match.empty:
-            predicted_rul = float(match.iloc[0]["Predicted_RUL"])
-    except Exception:
-        predicted_rul = float(mc_mean)
+mc_values = mc_result["samples"]
+mc_mean = mc_result["mean"]
+uncertainty = mc_result["std"]
 
-lower = max(0.0, predicted_rul - 1.96 * uncertainty)
-upper = predicted_rul + 1.96 * uncertainty
+# Point prediction: dropout OFF, identical to evaluate.py / test_predictions.csv
+predicted_rul = float(mc_result["point"])
+
+lower, upper = prediction_interval(
+    predicted_rul,
+    uncertainty,
+    DEFAULT_LEVEL
+)
 
 
 # ============================================================
@@ -1707,7 +1683,7 @@ with m2:
     </div>
 
     <div class="metric-small">
-    50 MC Dropout passes
+    {MC_PASSES} MC passes · uncalibrated
     </div>
 
     </div>
@@ -2296,38 +2272,7 @@ UNCERTAINTY ESTIMATION
 """)
 
 
-def get_mc_values(
-    model,
-    x,
-    passes=50
-):
-
-    model.eval()
-
-    for module in model.modules():
-
-        if isinstance(module, nn.Dropout):
-            module.train()
-
-    values = []
-
-    with torch.no_grad():
-
-        for _ in range(passes):
-
-            values.append(
-                model(x).item()
-            )
-
-    model.eval()
-
-    return np.array(values)
-
-
-mc_values = get_mc_values(
-    model,
-    input_tensor
-)
+# mc_values comes from the shared MC routine above (same samples as the headline number)
 
 
 uncertainty_fig = go.Figure()
@@ -2354,11 +2299,18 @@ uncertainty_fig.add_trace(
 )
 
 
+uncertainty_fig.add_hrect(
+    y0=lower,
+    y1=upper,
+    fillcolor="rgba(0,220,235,0.08)",
+    line_width=0
+)
+
 uncertainty_fig.add_hline(
     y=predicted_rul,
     line_dash="dot",
     annotation_text=
-        f"Mean RUL {predicted_rul:.1f}"
+        f"Point RUL {predicted_rul:.1f}"
 )
 
 
@@ -2390,6 +2342,56 @@ st.plotly_chart(
     uncertainty_fig,
     use_container_width=True
 )
+
+
+def load_coverage_summary(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+st.caption(
+    f"**{INTERVAL_LABEL}:** {lower:.1f} to {upper:.1f} cycles "
+    f"(point prediction ± {DEFAULT_LEVEL * 100:.0f}% Gaussian multiplier × σ, "
+    f"σ = {uncertainty:.2f} from {MC_PASSES} seeded MC Dropout passes with dropout "
+    f"active in the LSTM and the output head). The shaded band marks this interval. "
+    f"Treat it as an uncertainty indicator, not a guaranteed probability."
+)
+
+coverage_summary = load_coverage_summary(COVERAGE_JSON)
+
+if coverage_summary:
+    cov_test = coverage_summary["test"]
+    cov_lines = [
+        "| Nominal level | Measured coverage | Mean width (cycles) |",
+        "|---|---|---|",
+    ]
+    for level_key, level_val in sorted(cov_test["levels"].items()):
+        cov_lines.append(
+            f"| {float(level_key) * 100:.0f}% "
+            f"| {level_val['coverage'] * 100:.0f}% "
+            f"| {level_val['mean_width']:.1f} |"
+        )
+    st.markdown(
+        "**Measured interval coverage** · FD001 test set, "
+        f"{cov_test['n_engines']} engines, "
+        f"{coverage_summary.get('mc_passes', MC_PASSES)} MC passes\n\n"
+        + "\n".join(cov_lines)
+    )
+    st.caption(
+        "Coverage below the nominal level means the intervals are overconfident "
+        "(too narrow). These intervals are UNCALIBRATED. Measured with one "
+        "model and 100 engines, so each figure carries a few percentage points "
+        "of sampling error."
+    )
+else:
+    st.caption(
+        "Interval coverage has not been measured yet. Run `python coverage.py` "
+        "to evaluate it on the FD001 test set. Until then the interval is "
+        "uncalibrated."
+    )
 
 
 # ============================================================
@@ -2977,12 +2979,39 @@ MODEL PERFORMANCE · FD001 TEST SET
 """)
 
 
+def load_test_metrics(path):
+    """MAE/RMSE computed from evaluate.py's saved test predictions."""
+    try:
+        df = pd.read_csv(path)
+        err = df["Predicted_RUL"] - df["Actual_RUL"]
+        return (
+            float(err.abs().mean()),
+            float(np.sqrt((err ** 2).mean())),
+            int(len(df)),
+        )
+    except Exception:
+        return None
+
+
+_metrics = load_test_metrics(prediction_csv)
+if _metrics:
+    test_mae_text = f"{_metrics[0]:.2f}"
+    test_rmse_text = f"{_metrics[1]:.2f}"
+    metrics_note = (
+        f"Computed from data/processed/test_predictions.csv "
+        f"({_metrics[2]} FD001 test engines, final 30-cycle window each; "
+        f"produced by evaluate.py)."
+    )
+else:
+    test_mae_text = test_rmse_text = "N/A"
+    metrics_note = "Run evaluate.py to generate data/processed/test_predictions.csv."
+
 p1, p2, p3 = st.columns(3)
 
 
 with p1:
 
-    st.html("""
+    st.html(f"""
     <div class="metric">
 
     <div class="metric-label">
@@ -2990,7 +3019,7 @@ with p1:
     </div>
 
     <div class="metric-value">
-    16.66
+    {test_mae_text}
     </div>
 
     <div class="metric-small">
@@ -3003,7 +3032,7 @@ with p1:
 
 with p2:
 
-    st.html("""
+    st.html(f"""
     <div class="metric">
 
     <div class="metric-label">
@@ -3011,7 +3040,7 @@ with p2:
     </div>
 
     <div class="metric-value">
-    23.60
+    {test_rmse_text}
     </div>
 
     <div class="metric-small">
@@ -3044,6 +3073,9 @@ with p3:
     """)
 
 
+st.caption(metrics_note)
+
+
 # ============================================================
 # ADVANCED OPERATIONS & WHAT-IF SIMULATOR
 # ============================================================
@@ -3055,15 +3087,20 @@ ADVANCED OPERATIONS & WHAT-IF SIMULATOR
 """)
 
 st.caption(
-    "Interactive scenario simulation allows engineers to adjust operating parameters "
-    "and instantly evaluate the impact on Remaining Useful Life (RUL). "
-    "You can also generate and export structured maintenance work orders directly."
+    "The scenario simulator below is an ILLUSTRATIVE HEURISTIC. It does not use the "
+    "LSTM and is not a validated physical or data-driven simulation. "
+    "You can also generate and export a structured maintenance work order."
 )
 
 sim_col1, sim_col2 = st.columns(2)
 
 with sim_col1:
-    st.markdown("### 🎛️ Operational Stress Simulator")
+    st.markdown("### 🎛️ Illustrative Stress Scenario")
+    st.caption(
+        "Heuristic only: the RUL change is a fixed linear formula applied to the "
+        "model's baseline prediction. The coefficients are illustrative, not fitted "
+        "to C-MAPSS data, and the sliders are not C-MAPSS inputs."
+    )
     
     temp_delta = st.slider("Core Temperature Offset (°C)", -50.0, 50.0, 0.0, 1.0)
     pressure_load = st.slider("Bypass Pressure Multiplier", 0.8, 1.5, 1.0, 0.05)
@@ -3074,9 +3111,9 @@ with sim_col1:
     rul_delta_val = simulated_rul - predicted_rul
     
     st.metric(
-        label="Simulated Remaining Useful Life", 
+        label="Illustrative RUL (heuristic, not model output)", 
         value=f"{simulated_rul:.1f} cycles", 
-        delta=f"{rul_delta_val:+.1f} cycles vs Baseline"
+        delta=f"{rul_delta_val:+.1f} cycles vs model baseline"
     )
 
 with sim_col2:
@@ -3112,6 +3149,12 @@ with sim_col2:
             "current_cycle": int(current_cycle),
             "predicted_rul": float(predicted_rul),
             "uncertainty": float(uncertainty),
+            "uncertainty_note": "std of MC Dropout samples (cycles)",
+            "mc_passes": int(MC_PASSES),
+            "interval_level": float(DEFAULT_LEVEL),
+            "interval_lower": float(lower),
+            "interval_upper": float(upper),
+            "interval_status": "uncalibrated",
             "health_status": health,
             "priority": wo_priority,
             "recommended_action": wo_action,

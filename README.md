@@ -1,162 +1,156 @@
-# AEGIS AI: Explainable Agentic Predictive Maintenance
+<div align="center">
 
-[![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-Deep%20Learning-orange.svg)](https://pytorch.org/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-red.svg)](https://streamlit.io/)
+<img src="assets/petrichor-banner.svg" alt="Petrichor: the smell of rain on dry earth" width="100%">
 
-**AEGIS AI** ("Intelligent Shield") is an advanced explainable predictive maintenance framework designed for **Remaining Useful Life (RUL) estimation and intelligent equipment health monitoring**. Built using NASA's **C-MAPSS turbofan engine dataset**, the framework bridges the gap between deep learning predictions and actionable maintenance decisions by integrating **Explainable AI (XAI)**, **Uncertainty Quantification using Monte Carlo Dropout**, and an **Autonomous Multi-Agent Reasoning System**.
+a tiny cozy room in your browser.<br>
+two windows. one mood. zero dependencies.
 
----
+![made with](https://img.shields.io/badge/made%20with-vanilla%20JS-f7df1e?style=flat-square&labelColor=1b130c)
+![audio](https://img.shields.io/badge/sound-100%25%20generated-ffb257?style=flat-square&labelColor=1b130c)
+![assets](https://img.shields.io/badge/audio%20files-0-f48fb1?style=flat-square&labelColor=1b130c)
+![vibe](https://img.shields.io/badge/vibe-immaculate-9ad98c?style=flat-square&labelColor=1b130c)
 
-##  Key Features
+</div>
 
-1. **Deep Time-Series Forecasting**
-   Implements sliding-window preprocessing over multivariate operational sensor data to capture temporal degradation patterns and predict future equipment health.
+<img src="assets/rain-divider.svg" width="100%" alt="">
 
-2. **Uncertainty-Aware Predictions**
-   Uses **Monte Carlo Dropout** to estimate predictive uncertainty and provide confidence-aware RUL predictions, helping identify potentially high-risk predictions.
+## 🌧️ &nbsp;Pick a room
 
-3. **Transparent Occlusion-Based XAI**
-   Identifies the sensor inputs and temporal regions that have the greatest influence on the predicted RUL, improving the interpretability of the deep learning model.
+<table>
+<tr>
+<td width="50%" valign="top">
 
-4. **Autonomous Multi-Agent Diagnostic Chain**
-   Implements a sequential reasoning architecture:
+### Rain
+*night · fog · lofi*
 
-   **Diagnostic → Root-Cause → Verification → Maintenance**
+wipe the fogged glass and watch the city blur past.
+a shy cat. a warm lamp. thunder somewhere far away.
 
-   The agents analyze predicted degradation and anomaly signals to identify potential causes, verify supporting evidence, and generate prioritized maintenance recommendations.
+</td>
+<td width="50%" valign="top">
 
-5. **Interactive Digital Twin Control Center**
-   Provides a Streamlit-based dashboard for monitoring sensor telemetry, visualizing degradation trends, exploring model predictions, simulating equipment stress, and interpreting model outputs.
+### Spring
+*day · ocean · petals*
 
----
+an open french window, sheer curtains, a real shimmering sea.
+pink blossoms, a fluffy puppy and a sleepy kitten.
 
-## 📊 Model Performance
+</td>
+</tr>
+</table>
 
-### NASA C-MAPSS FD001
+<img src="assets/rain-divider.svg" width="100%" alt="">
 
-Evaluated on the official unseen test split of the **C-MAPSS FD001 benchmark**.
+## ✨ &nbsp;What's inside
 
-| Metric        |           Result |
-| ------------- | ---------------: |
-| **Test MAE**  | **16.66 cycles** |
-| **Test RMSE** | **23.60 cycles** |
+**🌧️ Rain room**
 
-### Model Architecture
+- 🪟 foggy glass you can wipe, drops that refract the city
+- ⛈️ four weathers: `rain` `storm` `clear` `cold`
+- ⚡ lightning bolts + thunder + a cat who jumps
+- 🐈 a wary cat. stroke it slowly to earn its trust
+- 🎧 rain that muffles when your cursor leaves the window
 
-* **Model:** 2-Layer LSTM
-* **Hidden Units:** 64
-* **Dropout:** 0.2
-* **Projection:** 64 → 32 → 1
-* **Input:** Multivariate time-series sensor data
-* **Output:** RUL prediction
+**🌊 Spring room**
 
----
+- 🪟 a real photographic window: sheer curtains, open sashes, a shimmering sea
+- 🌊 the water ripples and the sun glitter twinkles, and the sky follows your time
+- 🌸 bougainvillea blossoms sway at the corners, petals drift past
+- 🐶 **Biscuit** the puppy (trainable) and 🐱 **Mochi** the kitten
+- 💡 a pink tulip study lamp that really switches on and off
+- ⏰ white digital clock, pen cup, sticky notes, to-do iPad
 
-## 📂 Repository Structure
+**🛋️ Both rooms**
+
+- ⏰ everything follows your **real time**: sun, moon, stars, lamps
+- 📱 a tilted phone + a digital clock with your actual time
+- 📝 iPad **to-do list** you can add to and tick off (it remembers)
+- ☕ brew coffee · 🪴 water the plant until it blooms
+- 📓 journal: write a thought, watch it evaporate off the glass
+- 📻 radio: search any song, it plays quietly under the rain
+
+<img src="assets/rain-divider.svg" width="100%" alt="">
+
+## 🐶 &nbsp;Training Biscuit
+
+tap him → pick a trick.
+
+| trick | what he does |
+|:--|:--|
+| 🐾 **Paw** | shakes hands |
+| 🌀 **Spin** | does a little twirl |
+| 🔊 **Speak** | yip yip yip |
+| 🛏️ **Down** | flops low |
+
+he learns fast. two wins and it's **★ learned**.
+
+<img src="assets/rain-divider.svg" width="100%" alt="">
+
+## 🕹️ &nbsp;Poke around
+
+| do this | get that |
+|:--|:--|
+| move over the glass | wipes the fog *(Rain)* |
+| stroke the cat | trust grows, then purrs |
+| click the lamp | warm light on/off |
+| click the radio | search a song |
+| click the iPad | open your to-do list |
+| click the kettle / coffee / can | whistle · brew · water |
+| `time` slider | scrub through the day |
+| `switch theme` | hop between rooms |
+
+<img src="assets/rain-divider.svg" width="100%" alt="">
+
+## 🚀 &nbsp;Run it
+
+no install. no build.
+
+```bash
+git clone https://github.com/YOUR-USERNAME/petrichor.git
+cd petrichor
+# open index.html in your browser
+```
+
+or use **Live Server** in VS Code. click *Step inside* to start the sound.
+
+**deploy:** GitHub → Settings → Pages → `main` / root → live link in a minute.
+
+<img src="assets/rain-divider.svg" width="100%" alt="">
+
+## 🧪 &nbsp;Under the hood
 
 ```text
-AEGIS-AI-Predictive-Maintenance/
-│
-├── preprocessing.py
-│   └── Data cleaning, normalization, sensor selection,
-│       and time-series window generation
-│
-├── train_piecewise_lstm.py
-│   └── LSTM architecture and piecewise RUL training pipeline
-│
-├── evaluate.py
-│   └── Model evaluation and MAE/RMSE calculation
-│
-├── agents.py
-│   └── Multi-agent reasoning system:
-│       Diagnostic → Root-Cause → Verification → Maintenance
-│
-├── app.py
-│   └── Interactive Streamlit dashboard and monitoring interface
-│
-├── requirements.txt
-│   └── Python dependencies
-│
-└── README.md
-    └── Project documentation
+photos        spring window, pets, lamp, blossoms (in assets/photos)
+canvas 2D     fog, raindrops, rain-city skyline, water ripple, glitter
+Web Audio     rain, thunder, wind, birds, crickets, lofi, purr, yips
+procedural    the rain-city skyline, sky, petals
+localStorage  cat trust, plant growth, puppy tricks, to-do list
 ```
 
----
+one `index.html`. that's the whole project.
 
-## ⚙️ Installation & Setup
+<img src="assets/rain-divider.svg" width="100%" alt="">
 
-### 1. Clone the Repository
+## 📸 &nbsp;Photo credits
 
-```bash
-git clone https://github.com/navami-cmd/AEGIS-AI-Predictive-Maintenance.git
-cd AEGIS-AI-Predictive-Maintenance
-```
+the spring room uses reference photos stored in `assets/photos/`. if you publish this repo, swap in images you own or have the right to use.
 
-### 2. Install Dependencies
+<img src="assets/rain-divider.svg" width="100%" alt="">
 
-```bash
-pip install -r requirements.txt
-```
+## 🌱 &nbsp;Next up
 
-### 3. Launch the Dashboard
+- [ ] real-weather sync
+- [ ] mood tuner
+- [ ] tea-cup focus timer
+- [ ] more rooms *(train · rooftop · café)*
+- [ ] shareable room links
 
-```bash
-streamlit run app.py
-```
+<br>
 
----
+<div align="center">
 
-## 🧩 Core Technical Workflow
+*made with rain, tea and too much lofi* ☔
 
-### Data Pipeline — `preprocessing.py`
+**if it made you feel something, leave a ⭐**
 
-Processes the NASA C-MAPSS dataset by cleaning the sensor data, selecting relevant operational and sensor features, generating RUL targets, scaling the inputs, and creating fixed-length time-series sequences for LSTM training.
-
-### Deep Learning Engine — `train_piecewise_lstm.py`
-
-Trains the core LSTM-based temporal model to learn degradation patterns from historical sensor sequences and estimate the Remaining Useful Life of an engine.
-
-### Evaluation Framework — `evaluate.py`
-
-Evaluates the trained model on unseen test engines and calculates standard regression metrics including **MAE** and **RMSE** to measure prediction performance.
-
-### Autonomous Reasoning — `agents.py`
-
-Transforms model predictions and detected degradation signals into structured maintenance insights through a sequential multi-agent reasoning pipeline:
-
-**Diagnostic → Root-Cause → Verification → Maintenance**
-
----
-
-## 🔬 Technical Stack
-
-**Machine Learning**
-
-* PyTorch
-* LSTM
-* Time-Series Forecasting
-* RUL Estimation
-* Monte Carlo Dropout
-
-**Explainable AI**
-
-* Occlusion-Based XAI
-* Sensor Contribution Analysis
-
-**Agentic AI**
-
-* Multi-Agent Reasoning
-* Fault Diagnosis
-* Root-Cause Analysis
-* Evidence Verification
-* Maintenance Planning
-
-**Data & Visualization**
-
-* NumPy
-* Pandas
-* Scikit-learn
-* Plotly
-* Streamlit
-
+</div>
