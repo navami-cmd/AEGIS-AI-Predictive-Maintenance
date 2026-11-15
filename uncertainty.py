@@ -1,203 +1,61 @@
+"""
+uncertainty.py - standalone MC Dropout demo.
+
+Uses the SAME shared routine as the dashboard, the agents and the work-order export
+(mc_utils.mc_dropout_predict: 100 seeded passes, dropout active in the LSTM and in the
+output head), so a number printed here equals the number shown in the dashboard for
+the same window. Run:  python uncertainty.py
+"""
+
+import os
+
 import numpy as np
-import torch
-import torch.nn as nn
-import joblib
 
-
-# ============================================================
-# SETTINGS
-# ============================================================
-
-DATA_DIR = "data/processed"
-
-MODEL_PATH = f"{DATA_DIR}/lstm_rul_model.pth"
-SCALER_PATH = f"{DATA_DIR}/scaler.pkl"
-
-WINDOW_SIZE = 30
-NUM_SAMPLES = 50
-
-
-# ============================================================
-# LOAD USEFUL SENSORS
-# ============================================================
-
-with open(
-    f"{DATA_DIR}/useful_sensors.txt",
-    "r"
-) as file:
-
-    useful_sensors = [
-        line.strip()
-        for line in file
-        if line.strip()
-    ]
-
-
-# ============================================================
-# LSTM MODEL
-# ============================================================
-
-class LSTMModel(nn.Module):
-
-    def __init__(self, input_size):
-
-        super().__init__()
-
-        self.lstm = nn.LSTM(
-            input_size=input_size,
-            hidden_size=64,
-            num_layers=2,
-            batch_first=True,
-            dropout=0.2
-        )
-
-        self.fc = nn.Sequential(
-            nn.Linear(64, 32),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(32, 1)
-        )
-
-    def forward(self, x):
-
-        output, _ = self.lstm(x)
-
-        last_output = output[:, -1, :]
-
-        prediction = self.fc(last_output)
-
-        return prediction.squeeze(1)
-
-
-# ============================================================
-# LOAD MODEL
-# ============================================================
-
-model = LSTMModel(
-    len(useful_sensors)
+from mc_utils import (
+    INTERVAL_LABEL,
+    MC_PASSES,
+    load_lstm,
+    mc_dropout_predict,
+    prediction_interval,
 )
 
-model.load_state_dict(
-    torch.load(
-        MODEL_PATH,
-        map_location=torch.device("cpu")
-    )
-)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data", "processed")
+MODEL_PATH = os.path.join(DATA_DIR, "lstm_rul_model.pth")
+
+_model = None
 
 
-# ============================================================
-# ENABLE DROPOUT
-# ============================================================
-
-def enable_dropout(model):
-
-    for module in model.modules():
-
-        if isinstance(
-            module,
-            nn.Dropout
-        ):
-
-            module.train()
+def _get_model():
+    global _model
+    if _model is None:
+        with open(os.path.join(DATA_DIR, "useful_sensors.txt")) as f:
+            n_sensors = len([line for line in f if line.strip()])
+        _model = load_lstm(MODEL_PATH, n_sensors)
+    return _model
 
 
-# ============================================================
-# UNCERTAINTY PREDICTION
-# ============================================================
+def predict_with_uncertainty(sequence, engine_id=0, cycle=0, passes=MC_PASSES):
+    """
+    sequence: scaled window, shape (30, n_sensors).
+    Returns (point_rul, lower, upper, sigma, samples). The interval is the
+    UNCALIBRATED 95% interval (point +/- 1.96 * sigma); see calibration.py.
+    engine_id / cycle only seed the sampling, so the same pair is reproducible.
+    """
+    result = mc_dropout_predict(_get_model(), sequence, engine_id, cycle, passes=passes)
+    lower, upper = prediction_interval(result["point"], result["std"], 0.95)
+    return result["point"], lower, upper, result["std"], result["samples"]
 
-def predict_with_uncertainty(
-    sequence
-):
-
-    sequence = torch.tensor(
-        sequence,
-        dtype=torch.float32
-    ).unsqueeze(0)
-
-    model.eval()
-
-    # Enable dropout during inference
-    enable_dropout(model)
-
-    predictions = []
-
-    for _ in range(NUM_SAMPLES):
-
-        with torch.no_grad():
-
-            prediction = model(
-                sequence
-            ).item()
-
-        predictions.append(
-            prediction
-        )
-
-    predictions = np.array(
-        predictions
-    )
-
-    mean_prediction = predictions.mean()
-
-    std_prediction = predictions.std()
-
-    lower_bound = (
-        mean_prediction -
-        1.96 * std_prediction
-    )
-
-    upper_bound = (
-        mean_prediction +
-        1.96 * std_prediction
-    )
-
-    return (
-        max(0, mean_prediction),
-        max(0, lower_bound),
-        max(0, upper_bound),
-        std_prediction,
-        predictions
-    )
-
-
-# ============================================================
-# DEMO TEST
-# ============================================================
 
 if __name__ == "__main__":
-
-    X_val = np.load(
-        f"{DATA_DIR}/X_val.npy"
-    )
-
-    sample = X_val[0]
-
-    mean_rul, lower, upper, uncertainty, predictions = (
-        predict_with_uncertainty(sample)
-    )
+    X_val = np.load(os.path.join(DATA_DIR, "X_val.npy"))
+    point, lower, upper, sigma, samples = predict_with_uncertainty(X_val[0])
 
     print("\n========================================")
-    print("UNCERTAINTY ESTIMATION")
+    print("UNCERTAINTY ESTIMATION (shared MC Dropout)")
     print("========================================")
-
-    print(
-        f"Predicted RUL : {mean_rul:.2f} cycles"
-    )
-
-    print(
-        f"Uncertainty   : ±{uncertainty:.2f} cycles"
-    )
-
-    print(
-        f"Lower bound   : {lower:.2f} cycles"
-    )
-
-    print(
-        f"Upper bound   : {upper:.2f} cycles"
-    )
-
-    print(
-        f"Samples       : {NUM_SAMPLES}"
-    )
-
+    print(f"Predicted RUL : {point:.2f} cycles (dropout off)")
+    print(f"Uncertainty   : ±{sigma:.2f} cycles (std of {len(samples)} MC samples)")
+    print(f"{INTERVAL_LABEL}")
+    print(f"Lower / Upper : {lower:.2f} / {upper:.2f} cycles")
     print("========================================")

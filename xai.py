@@ -1,167 +1,54 @@
+"""
+xai.py - standalone signed occlusion demo.
+
+Uses the SAME implementation as the dashboard (xai_utils.occlusion_effects):
+    effect = RUL(sensor history replaced by its 30-cycle mean) - RUL(original)
+Positive effect: the sensor's recent pattern pulls the estimate toward shorter life.
+This is model sensitivity, not proof of a physical fault. Run:  python xai.py
+"""
+
 import os
+
 import numpy as np
 import torch
-import torch.nn as nn
 
-# -----------------------------
-# Configuration
-# -----------------------------
-WINDOW_SIZE = 30
-MODEL_PATH = "data/processed/lstm_rul_model.pth"
-USEFUL_SENSORS_PATH = "data/processed/useful_sensors.txt"
-X_TEST_PATH = "data/processed/X_val.npy"
+from mc_utils import load_lstm
+from xai_utils import occlusion_effects
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data", "processed")
 
-# -----------------------------
-# LSTM Model
-# -----------------------------
-class LSTMModel(nn.Module):
-    def __init__(self, input_size):
-        super().__init__()
-
-        self.lstm = nn.LSTM(
-            input_size=input_size,
-            hidden_size=64,
-            num_layers=2,
-            batch_first=True,
-            dropout=0.2
-        )
-
-        self.fc = nn.Sequential(
-            nn.Linear(64, 32),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(32, 1)
-        )
-
-    def forward(self, x):
-        output, _ = self.lstm(x)
-        last_output = output[:, -1, :]
-        return self.fc(last_output).squeeze(1)
-
-
-# -----------------------------
-# Load sensors
-# -----------------------------
-with open(USEFUL_SENSORS_PATH, "r") as f:
+with open(os.path.join(DATA_DIR, "useful_sensors.txt")) as f:
     sensors = [line.strip() for line in f if line.strip()]
 
-
-# -----------------------------
-# Load model
-# -----------------------------
-model = LSTMModel(len(sensors))
-model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
-model.eval()
+model = load_lstm(os.path.join(DATA_DIR, "lstm_rul_model.pth"), len(sensors))
 
 
-# -----------------------------
-# Load validation data
-# -----------------------------
-X_val = np.load(X_TEST_PATH)
-
-# Use one sample
-sample = X_val[0].copy()
-
-x = torch.tensor(
-    sample,
-    dtype=torch.float32
-).unsqueeze(0)
-
-
-# -----------------------------
-# Original prediction
-# -----------------------------
-with torch.no_grad():
-    original_prediction = model(x).item()
-
-
-# -----------------------------
-# Sensor occlusion XAI
-# -----------------------------
-importance = []
-
-for sensor_index, sensor_name in enumerate(sensors):
-
-    modified = sample.copy()
-
-    # Replace this sensor's complete 30-cycle sequence
-    # with its average value
-    sensor_mean = np.mean(modified[:, sensor_index])
-
-    modified[:, sensor_index] = sensor_mean
-
-    modified_tensor = torch.tensor(
-        modified,
-        dtype=torch.float32
-    ).unsqueeze(0)
-
+def point_predict(window):
     with torch.no_grad():
-        new_prediction = model(modified_tensor).item()
-
-    contribution = abs(original_prediction - new_prediction)
-
-    importance.append({
-        "sensor": sensor_name,
-        "importance": contribution,
-        "original_prediction": original_prediction,
-        "modified_prediction": new_prediction
-    })
+        x = torch.tensor(np.asarray(window, dtype=np.float32)).unsqueeze(0)
+        return float(model(x).item())
 
 
-# -----------------------------
-# Sort by importance
-# -----------------------------
-importance.sort(
-    key=lambda x: x["importance"],
-    reverse=True
-)
+sample = np.load(os.path.join(DATA_DIR, "X_val.npy"))[0]
+result = occlusion_effects(point_predict, sample, sensors)
 
-
-# -----------------------------
-# Display results
-# -----------------------------
 print("\n==============================")
-print("XAI SENSOR CONTRIBUTION")
+print("XAI SENSOR CONTRIBUTION (signed occlusion)")
 print("==============================")
-
-print(f"\nOriginal Predicted RUL: {original_prediction:.2f} cycles")
-
+print(f"\nOriginal predicted RUL: {result['baseline']:.2f} cycles")
 print("\nTop contributing sensors:")
+for e in result["effects"][:10]:
+    print(f"#{e['rank']:<2} {e['sensor']:10s} effect {e['delta']:+8.3f} cycles | "
+          f"share {e['share']:6.1%} | {e['tier']}")
 
-for item in importance[:10]:
-    print(
-        f"{item['sensor']:10s} | "
-        f"Importance: {item['importance']:.4f} | "
-        f"Modified Prediction: {item['modified_prediction']:.2f}"
-    )
+with open(os.path.join(DATA_DIR, "xai_results.txt"), "w", encoding="utf-8") as f:
+    f.write("XAI SENSOR CONTRIBUTION (signed occlusion)\n")
+    f.write("effect = RUL(sensor flattened to its window mean) - RUL(original)\n")
+    f.write("positive = the sensor's pattern pulls the estimate toward shorter life\n")
+    f.write("Model sensitivity, not proof of a physical fault.\n\n")
+    f.write(f"Original Predicted RUL: {result['baseline']:.2f} cycles\n\n")
+    for e in result["effects"]:
+        f.write(f"{e['sensor']} | effect {e['delta']:+.4f} | share {e['share']:.4f} | {e['tier']}\n")
 
-# -----------------------------
-# Save results
-# -----------------------------
-os.makedirs("data/processed", exist_ok=True)
-
-with open(
-    "data/processed/xai_results.txt",
-    "w"
-) as f:
-
-    f.write("XAI SENSOR CONTRIBUTION\n")
-    f.write("=======================\n\n")
-
-    f.write(
-        f"Original Predicted RUL: "
-        f"{original_prediction:.2f} cycles\n\n"
-    )
-
-    for item in importance:
-
-        f.write(
-            f"{item['sensor']} | "
-            f"Importance: {item['importance']:.4f} | "
-            f"Modified Prediction: "
-            f"{item['modified_prediction']:.2f}\n"
-        )
-
-print("\nXAI results saved to:")
-print("data/processed/xai_results.txt")
+print("\nXAI results saved to:", os.path.join(DATA_DIR, "xai_results.txt"))

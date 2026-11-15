@@ -1,0 +1,22 @@
+XAI SENSOR CONTRIBUTION
+=======================
+
+Original Predicted RUL: 180.39 cycles
+
+sensor_11 | Importance: 0.6545 | Modified Prediction: 179.73
+sensor_20 | Importance: 0.6421 | Modified Prediction: 181.03
+sensor_17 | Importance: 0.6379 | Modified Prediction: 179.75
+sensor_6 | Importance: 0.4788 | Modified Prediction: 180.87
+sensor_8 | Importance: 0.3848 | Modified Prediction: 180.00
+sensor_2 | Importance: 0.2926 | Modified Prediction: 180.68
+sensor_21 | Importance: 0.2656 | Modified Prediction: 180.65
+sensor_15 | Importance: 0.2530 | Modified Prediction: 180.13
+sensor_13 | Importance: 0.2133 | Modified Prediction: 180.60
+sensor_9 | Importance: 0.0845 | Modified Prediction: 180.47
+sensor_12 | Importance: 0.0673 | Modified Prediction: 180.45
+sensor_14 | Importance: 0.0536 | Modified Prediction: 180.44
+sensor_3 | Importance: 0.0225 | Modified Prediction: 180.37
+sensor_4 | Importance: 0.0182 | Modified Prediction: 180.41
+sensor_7 | Importance: 0.0017 | Modified Prediction: 180.39
+sensor_5 | Importance: 0.0000 | Modified Prediction: 180.39
+sensor_16 | Importance: 0.0000 | Modified Prediction: 180.39

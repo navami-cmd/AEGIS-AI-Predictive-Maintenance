@@ -1,0 +1,62 @@
+{
+  "generated": "2026-11-14 20:36:08",
+  "label": "MC Dropout interval (uncalibrated)",
+  "calibration_status": "uncalibrated",
+  "interval_definition": "point prediction +/- z * MC-Dropout std (Gaussian z)",
+  "mc_passes": 100,
+  "base_seed": 2024,
+  "test": {
+    "n_engines": 100,
+    "levels": {
+      "0.50": {
+        "coverage": 0.32,
+        "mean_width": 16.081544019560752
+      },
+      "0.80": {
+        "coverage": 0.6,
+        "mean_width": 30.555435288158396
+      },
+      "0.90": {
+        "coverage": 0.73,
+        "mean_width": 39.21747661823538
+      },
+      "0.95": {
+        "coverage": 0.77,
+        "mean_width": 46.73050566739016
+      }
+    },
+    "std_vs_abs_error_corr": {
+      "pearson": 0.6321984201228611,
+      "spearman": 0.7123312331233123
+    }
+  },
+  "validation_calibration": {
+    "n_validation_windows": 250,
+    "fitted_on": "validation windows only (never test data)",
+    "width_scale_by_level": {
+      "0.50": 1.643303804493488,
+      "0.80": 1.5948107157237195,
+      "0.90": 1.539537968096648,
+      "0.95": 1.5057341439992862
+    },
+    "test_coverage_with_scale": {
+      "0.50": {
+        "coverage": 0.53,
+        "mean_width": 26.426862469473694
+      },
+      "0.80": {
+        "coverage": 0.8,
+        "mean_width": 48.7301356211577
+      },
+      "0.90": {
+        "coverage": 0.89,
+        "mean_width": 60.362315164645494
+      },
+      "0.95": {
+        "coverage": 0.95,
+        "mean_width": 70.31898191779499
+      }
+    },
+    "note": "Diagnostic only. Validation windows come from all life stages of 20 engines, while the test set uses one final window per engine, so the factors may not transfer. Not applied in the dashboard."
+  }
+}

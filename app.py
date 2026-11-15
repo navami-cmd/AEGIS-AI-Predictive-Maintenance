@@ -9,7 +9,19 @@ import torch.nn as nn
 import plotly.graph_objects as go
 import joblib
 
-from agents import run_agent_pipeline
+from pipeline import analyze_window
+from data_checks import (
+    DataError,
+    prepare_window,
+    training_recipe_scaler,
+    compare_scalers,
+)
+from sensor_info import sensor_label, sensor_long_label, SOURCE as SENSOR_SOURCE
+from work_order import (
+    build_work_order,
+    validate_work_order,
+    to_json as work_order_json,
+)
 from mc_utils import (
     mc_dropout_predict,
     prediction_interval,
@@ -577,8 +589,6 @@ def load_everything():
 
     except Exception:
 
-        from sklearn.preprocessing import MinMaxScaler
-
         train_path = os.path.join(
             BASE_DIR,
             "data",
@@ -606,17 +616,10 @@ def load_everything():
             names=columns
         )
 
-        scaler = MinMaxScaler()
-
-        scaler.fit(train_df[sensors])
-
-        try:
-            joblib.dump(
-                scaler,
-                SCALER_PATH
-            )
-        except Exception:
-            pass
+        # Re-create the scaler exactly as preprocessing.py does (80% training
+        # engines, seed 42). It is NOT written to disk, so scaler.pkl is never
+        # replaced by a differently fitted scaler.
+        scaler = training_recipe_scaler(train_df, sensors)
 
     columns = [
         "unit",
@@ -743,31 +746,59 @@ INPUT CHANNELS<br>
 """)
 
 
+TRAIN_PATH = os.path.join(BASE_DIR, "data", "CMAPSSData", "train_FD001.txt")
+
+
+@st.cache_data(show_spinner=False)
+def check_scaler_consistency(train_path, sensor_names):
+    """(matches_training_recipe, [sensors that differ]) or None if it cannot be checked."""
+    try:
+        cols = ["unit", "cycle", "setting_1", "setting_2", "setting_3"]
+        cols += [f"sensor_{i}" for i in range(1, 22)]
+        train_df = pd.read_csv(train_path, sep=r"\s+", header=None, names=cols)
+        recipe = training_recipe_scaler(train_df, list(sensor_names))
+        same, bad = compare_scalers(joblib.load(SCALER_PATH), recipe)
+        return same, [sensor_names[i] for i in bad]
+    except Exception:
+        return None
+
+
+_scaler_status = check_scaler_consistency(TRAIN_PATH, tuple(sensors))
+if _scaler_status is not None and not _scaler_status[0]:
+    st.sidebar.warning(
+        "scaler.pkl differs from the scaler used to train the model "
+        f"({', '.join(_scaler_status[1])}). Test metrics may differ slightly. "
+        "Run `python scaler_check.py` for details."
+    )
+
+
 # ============================================================
 # ENGINE DATA
 # ============================================================
 
-engine = (
-    test_df[
-        test_df["unit"] == selected_engine
-    ]
-    .sort_values("cycle")
-)
+try:
+    prepared = prepare_window(test_df, selected_engine, sensors, scaler)
+except DataError as data_error:
+    st.error(f"Input data problem: {data_error}")
+    st.stop()
 
-current_cycle = int(
-    engine["cycle"].max()
-)
+engine = prepared["engine"]
 
-recent = engine.tail(30)
+current_cycle = prepared["current_cycle"]
+
+recent = prepared["recent"]
 
 raw_values = recent[sensors].values
 
-scaled = scaler.transform(recent[sensors])
+scaled = prepared["scaled"]
 
 input_tensor = torch.tensor(
     scaled,
     dtype=torch.float32
 ).unsqueeze(0)
+
+for _data_warning in prepared["warnings"]:
+    st.warning(_data_warning)
 
 
 # ============================================================
@@ -788,98 +819,84 @@ COVERAGE_JSON = os.path.join(
     "coverage_summary.json"
 )
 
-# ONE shared, seeded MC Dropout run per engine window. Everything below
-# (headline number, chart, agents, work order) uses this same result.
-mc_result = mc_dropout_predict(
-    model,
-    scaled,
-    int(selected_engine),
-    current_cycle,
-    passes=MC_PASSES
+# ONE analysis per engine window (pipeline.analyze_window): shared seeded MC Dropout,
+# signed occlusion XAI, prediction intervals and the four rule-based agents.
+# Every number shown or exported below comes from this single result.
+
+CALIBRATION_JSON = os.path.join(
+    BASE_DIR,
+    "data",
+    "processed",
+    "calibration_summary.json"
 )
 
+
+def read_json_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+calibration_summary = read_json_file(CALIBRATION_JSON)
+
+
+def point_predict(window):
+    model.eval()
+    with torch.no_grad():
+        return float(
+            model(
+                torch.tensor(
+                    np.asarray(window, dtype=np.float32)
+                ).unsqueeze(0)
+            ).item()
+        )
+
+
+def run_mc(window, engine_id, cycle):
+    return mc_dropout_predict(
+        model,
+        window,
+        engine_id,
+        cycle,
+        passes=MC_PASSES
+    )
+
+
+try:
+    analysis = analyze_window(
+        point_predict,
+        run_mc,
+        scaled,
+        sensors,
+        int(selected_engine),
+        current_cycle,
+        calibration_summary
+    )
+except Exception as analysis_error:
+    st.error("The analysis could not be completed for this engine.")
+    st.code(str(analysis_error))
+    st.stop()
+
+mc_result = analysis["mc"]
 mc_values = mc_result["samples"]
 mc_mean = mc_result["mean"]
-uncertainty = mc_result["std"]
+uncertainty = analysis["sigma"]
 
 # Point prediction: dropout OFF, identical to evaluate.py / test_predictions.csv
-predicted_rul = float(mc_result["point"])
+predicted_rul = analysis["point"]
 
-lower, upper = prediction_interval(
-    predicted_rul,
-    uncertainty,
-    DEFAULT_LEVEL
-)
+intervals = analysis["intervals"]
+lower, upper = intervals["primary"]
+unc_lower, unc_upper = intervals["uncalibrated"]
 
 
 # ============================================================
 # XAI
 # ============================================================
 
-def xai_analysis(
-    model,
-    data,
-    sensors
-):
-
-    model.eval()
-
-    original_tensor = torch.tensor(
-        data,
-        dtype=torch.float32
-    ).unsqueeze(0)
-
-    with torch.no_grad():
-
-        original_prediction = (
-            model(original_tensor).item()
-        )
-
-    results = []
-
-    for i, sensor in enumerate(sensors):
-
-        modified = data.copy()
-
-        modified[:, i] = np.mean(
-            modified[:, i]
-        )
-
-        modified_tensor = torch.tensor(
-            modified,
-            dtype=torch.float32
-        ).unsqueeze(0)
-
-        with torch.no_grad():
-
-            new_prediction = (
-                model(modified_tensor).item()
-            )
-
-        importance = abs(
-            original_prediction - new_prediction
-        )
-
-        results.append(
-            {
-                "sensor": sensor,
-                "importance": importance
-            }
-        )
-
-    results.sort(
-        key=lambda x: x["importance"],
-        reverse=True
-    )
-
-    return results
-
-
-sensor_importance = xai_analysis(
-    model,
-    scaled,
-    sensors
-)
+sensor_importance = analysis["xai"]["effects"]
 
 
 # ============================================================
@@ -952,47 +969,24 @@ for sensor in selected_sensors:
 
         trend = 0.0
 
-    importance_score = min(
-        100,
-        (importance / max(
-            max(
-                item["importance"]
-                for item in sensor_importance
-            ),
-            1e-8
-        )) * 100
+    # Contribution rank from the signed occlusion result (no weighted risk score).
+    effect_item = next(
+        (item for item in sensor_importance if item["sensor"] == sensor),
+        None
     )
 
-    trend_score = min(
-        100,
-        trend
-    )
+    share_pct = effect_item["share"] * 100 if effect_item else 0.0
 
-    variation_score = min(
-        100,
-        variation * 100
-    )
+    sensor_tier = effect_item["tier"] if effect_item else "Lower"
 
-    risk_score = (
-        0.50 * importance_score
-        + 0.35 * trend_score
-        + 0.15 * variation_score
-    )
+    effect_delta = effect_item["delta"] if effect_item else 0.0
 
-    if risk_score >= 65:
+    sensor_risk = sensor_tier.upper()
 
-        sensor_risk = "HIGH"
-        sensor_symbol = "🔴"
-
-    elif risk_score >= 35:
-
-        sensor_risk = "MEDIUM"
-        sensor_symbol = "🟡"
-
-    else:
-
-        sensor_risk = "LOW"
-        sensor_symbol = "🟢"
+    sensor_symbol = {
+        "Top 3": "🔷",
+        "Top 10": "🔹"
+    }.get(sensor_tier, "▫️")
 
     selected_sensor_results.append(
         {
@@ -1001,7 +995,8 @@ for sensor in selected_sensors:
             "mean": mean_value,
             "variation": variation,
             "trend": trend,
-            "risk_score": risk_score,
+            "risk_score": share_pct,
+            "delta": effect_delta,
             "risk": sensor_risk,
             "symbol": sensor_symbol
         }
@@ -1012,36 +1007,27 @@ for sensor in selected_sensors:
 # AGGREGATED MULTI-SENSOR RISK
 # ============================================================
 
-if selected_sensor_results:
-
-    aggregate_risk_score = float(
-        np.mean(
-            [
-                x["risk_score"]
-                for x in selected_sensor_results
-            ]
-        )
+aggregate_risk_score = float(
+    sum(
+        x["risk_score"]
+        for x in selected_sensor_results
     )
+)
+
+if any(x["risk"] == "TOP 3" for x in selected_sensor_results):
+
+    aggregate_risk = "INCLUDES TOP 3"
+    aggregate_symbol = "🔷"
+
+elif any(x["risk"] == "TOP 10" for x in selected_sensor_results):
+
+    aggregate_risk = "INCLUDES TOP 10"
+    aggregate_symbol = "🔹"
 
 else:
 
-    aggregate_risk_score = 0.0
-
-
-if aggregate_risk_score >= 65:
-
-    aggregate_risk = "HIGH"
-    aggregate_symbol = "🔴"
-
-elif aggregate_risk_score >= 35:
-
-    aggregate_risk = "MEDIUM"
-    aggregate_symbol = "🟡"
-
-else:
-
-    aggregate_risk = "LOW"
-    aggregate_symbol = "🟢"
+    aggregate_risk = "LOWER CONTRIBUTION"
+    aggregate_symbol = "▫️"
 
 
 selected_sensor_result = selected_sensor_results[0]
@@ -1051,11 +1037,7 @@ selected_sensor_result = selected_sensor_results[0]
 # AGENTS
 # ============================================================
 
-agent_results = run_agent_pipeline(
-    predicted_rul,
-    uncertainty,
-    sensor_importance
-)
+agent_results = analysis["agents"]
 
 diagnostic = agent_results["diagnostic"]
 root_cause = agent_results["root_cause"]
@@ -1067,20 +1049,13 @@ maintenance = agent_results["maintenance"]
 # MACHINE HEALTH
 # ============================================================
 
-if predicted_rul <= 30:
+health = analysis["health"]
 
-    health = "CRITICAL"
-    health_symbol = "🔴"
-
-elif predicted_rul <= 60:
-
-    health = "WARNING"
-    health_symbol = "🟡"
-
-else:
-
-    health = "HEALTHY"
-    health_symbol = "🟢"
+health_symbol = {
+    "CRITICAL": "🔴",
+    "WARNING": "🟡",
+    "HEALTHY": "🟢"
+}.get(health, "⚪")
 
 
 # ============================================================
@@ -1098,7 +1073,7 @@ st.html("""
 
 <div class="subtitle">
     Deep time-series prediction · uncertainty estimation ·
-    explainable AI · multi-agent diagnostic reasoning
+    explainable AI · rule-based multi-agent reasoning
 </div>
 """)
 
@@ -1566,7 +1541,14 @@ AEGIS ENGINE
 </div>
 
 <div class="ai-row">
-<span>DOMINANT SIGNAL</span>
+<span>PRIORITY</span>
+<span class="ai-value">
+{html.escape(maintenance["priority"].upper())}
+</span>
+</div>
+
+<div class="ai-row">
+<span>TOP SENSOR</span>
 <span class="ai-value">
 {html.escape(top_sensor.upper())}
 </span>
@@ -1580,7 +1562,7 @@ AEGIS ENGINE
 </div>
 
 <div class="ai-row">
-<span>FAULT RISK</span>
+<span>CONTRIBUTION RANK</span>
 <span class="ai-value">
 {selected_sensor_result["risk"]}
 </span>
@@ -1898,14 +1880,15 @@ for i, (
 
 st.html("""
 <div class="section-title-large">
-SELECTED SENSOR FAULT ANALYSIS
+SELECTED SENSOR ANALYSIS
 </div>
 """)
 
 st.caption(
-    "The selected sensor risk is an analytical degradation indicator. "
-    "It combines the sensor's recent trend, signal variation and XAI "
-    "contribution. It does not assign a physical fault type to the sensor."
+    "The contribution rank comes from the model's signed occlusion result: it shows how "
+    "strongly the LSTM's RUL estimate depends on this sensor's recent history. Trend and "
+    "variation are descriptive statistics of the raw readings. None of this identifies a "
+    "physical fault in the sensor or the engine."
 )
 
 
@@ -1940,7 +1923,7 @@ with sensor_analysis_cols[1]:
     <div class="metric">
 
         <div class="metric-label">
-        Fault / Degradation Risk
+        Contribution Rank
         </div>
 
         <div class="metric-value"
@@ -1950,7 +1933,7 @@ with sensor_analysis_cols[1]:
         </div>
 
         <div class="metric-small">
-        risk score {selected_sensor_result["risk_score"]:.1f} / 100
+        share of total effect {selected_sensor_result["risk_score"]:.1f}%
         </div>
 
     </div>
@@ -2020,7 +2003,7 @@ if len(selected_sensors) > 1:
             font-size:.59rem;
             letter-spacing:.13em;
         ">
-        MULTI-SENSOR RISK AGGREGATION
+        MULTI-SENSOR CONTRIBUTION
         </div>
 
         <div style="
@@ -2037,7 +2020,7 @@ if len(selected_sensors) > 1:
             margin-top:6px;
         ">
         {len(selected_sensors)} selected sensor channels ·
-        aggregate risk score {aggregate_risk_score:.1f}/100
+        combined share of total effect {aggregate_risk_score:.1f}%
         </div>
 
     </div>
@@ -2306,6 +2289,15 @@ uncertainty_fig.add_hrect(
     line_width=0
 )
 
+if intervals["calibrated"] is not None:
+    for _bound in (unc_lower, unc_upper):
+        uncertainty_fig.add_hline(
+            y=_bound,
+            line_dash="dash",
+            line_width=1,
+            opacity=0.5
+        )
+
 uncertainty_fig.add_hline(
     y=predicted_rul,
     line_dash="dot",
@@ -2352,13 +2344,22 @@ def load_coverage_summary(path):
         return None
 
 
-st.caption(
-    f"**{INTERVAL_LABEL}:** {lower:.1f} to {upper:.1f} cycles "
-    f"(point prediction ± {DEFAULT_LEVEL * 100:.0f}% Gaussian multiplier × σ, "
-    f"σ = {uncertainty:.2f} from {MC_PASSES} seeded MC Dropout passes with dropout "
-    f"active in the LSTM and the output head). The shaded band marks this interval. "
-    f"Treat it as an uncertainty indicator, not a guaranteed probability."
-)
+if intervals["calibrated"] is not None:
+    st.caption(
+        f"**{intervals['primary_label']}:** {lower:.1f} to {upper:.1f} cycles. "
+        f"For comparison, the {INTERVAL_LABEL.lower()} is {unc_lower:.1f} to "
+        f"{unc_upper:.1f} cycles (dashed lines). σ = {uncertainty:.2f} from {MC_PASSES} "
+        f"seeded MC Dropout passes. The width factor was fitted on validation engines "
+        f"only; coverage is empirical, not a guarantee."
+    )
+else:
+    st.caption(
+        f"**{INTERVAL_LABEL}:** {lower:.1f} to {upper:.1f} cycles "
+        f"(point prediction ± {DEFAULT_LEVEL * 100:.0f}% Gaussian multiplier × σ, "
+        f"σ = {uncertainty:.2f} from {MC_PASSES} seeded MC Dropout passes with dropout "
+        f"active in the LSTM and the output head). The shaded band marks this interval. "
+        f"Treat it as an uncertainty indicator, not a guaranteed probability."
+    )
 
 coverage_summary = load_coverage_summary(COVERAGE_JSON)
 
@@ -2386,7 +2387,28 @@ if coverage_summary:
         "model and 100 engines, so each figure carries a few percentage points "
         "of sampling error."
     )
-else:
+if calibration_summary and calibration_summary.get("test_report_only"):
+    cal_lines = [
+        "| Nominal | Test coverage, uncalibrated | Test coverage, validation-calibrated | Adopted |",
+        "|---|---|---|---|",
+    ]
+    for lvl_key, lvl_val in sorted(calibration_summary["test_report_only"]["levels"].items()):
+        cal_lines.append(
+            f"| {float(lvl_key) * 100:.0f}% "
+            f"| {lvl_val['uncalibrated']['coverage'] * 100:.0f}% "
+            f"| {lvl_val['with_validation_scale']['coverage'] * 100:.0f}% "
+            f"| {'yes' if calibration_summary['adopted'].get(lvl_key) else 'no'} |"
+        )
+    st.markdown(
+        "**Calibration study** · width factor fitted on validation engines only "
+        f"({calibration_summary['validation']['n_engines']} engines); test set used for reporting only\n\n"
+        + "\n".join(cal_lines)
+    )
+    st.caption(
+        "Calibrated intervals are an empirical improvement on validation data, not a guarantee. "
+        "Test coverage can differ from nominal because it is measured on only 100 engines."
+    )
+if not coverage_summary:
     st.caption(
         "Interval coverage has not been measured yet. Run `python coverage.py` "
         "to evaluate it on the FD001 test set. Until then the interval is "
@@ -2405,49 +2427,98 @@ EXPLAINABLE AI · SENSOR CONTRIBUTION
 """)
 
 
-xai_df = pd.DataFrame(
-    sensor_importance[:10]
-)
+chart_items = list(sensor_importance[:10])
 
-xai_df = xai_df.sort_values(
-    "importance"
-)
+_shown = {item["sensor"] for item in chart_items}
+
+for _sel in selected_sensors:
+    if _sel not in _shown:
+        chart_items.append(
+            next(i for i in sensor_importance if i["sensor"] == _sel)
+        )
 
 
-xai_fig = go.Figure(
-    go.Bar(
-        x=xai_df["importance"],
-        y=xai_df["sensor"],
-        orientation="h",
-        text=[
-            f"{v:.2f}"
-            for v in xai_df["importance"]
-        ],
-        textposition="outside"
+def _bar_label(item):
+    label = sensor_label(item["sensor"])
+    return label + (" ◀ selected" if item["sensor"] in selected_sensors else "")
+
+
+xai_fig = go.Figure()
+
+for _name, _color, _test in (
+    ("Pulls estimate toward shorter life (flattening raises RUL)", "#ff9f43", lambda d: d > 0),
+    ("Pushes estimate toward longer life (flattening lowers RUL)", "#00d4e6", lambda d: d < 0),
+    ("No effect", "#6b7f86", lambda d: d == 0),
+):
+    group = [i for i in chart_items if _test(i["delta"])]
+
+    if not group:
+        continue
+
+    xai_fig.add_trace(
+        go.Bar(
+            x=[i["delta"] for i in group],
+            y=[_bar_label(i) for i in group],
+            orientation="h",
+            name=_name,
+            marker=dict(
+                color=_color,
+                opacity=[1.0 if i["rank"] <= 3 else 0.45 for i in group],
+                line=dict(
+                    color="#ffffff",
+                    width=[2.5 if i["sensor"] in selected_sensors else 0 for i in group]
+                )
+            ),
+            text=[
+                f"{i['delta']:+.2f} · {i['share'] * 100:.0f}%"
+                for i in group
+            ],
+            textposition="outside",
+            customdata=[
+                [
+                    i["rank"],
+                    i["tier"],
+                    i["description"] or "no documented description"
+                ]
+                for i in group
+            ],
+            hovertemplate=(
+                "%{y}<br>Effect: %{x:+.3f} cycles<br>"
+                "Rank %{customdata[0]} (%{customdata[1]})<br>"
+                "Measures: %{customdata[2]}<extra></extra>"
+            )
+        )
     )
-)
 
 
 xai_fig.update_layout(
-    height=410,
+    height=max(410, 38 * len(chart_items) + 130),
+    barmode="overlay",
     template="plotly_dark",
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(0,0,0,0)",
     margin=dict(
         l=25,
-        r=55,
+        r=80,
         t=20,
         b=20
     ),
     xaxis=dict(
-        title="Model contribution",
+        title="Change in predicted RUL when the sensor's history is flattened (cycles)",
         gridcolor="#17272e",
-        zeroline=False
+        zeroline=True,
+        zerolinecolor="#4a6b75"
     ),
     yaxis=dict(
         autorange="reversed"
     ),
-    showlegend=False
+    legend=dict(
+        orientation="h",
+        yanchor="bottom",
+        y=1.02,
+        x=0
+    ),
+    showlegend=True
 )
 
 
@@ -2483,7 +2554,7 @@ st.html(f"""
     &nbsp;&nbsp;·&nbsp;&nbsp;
 
     <strong style="color:#b9dce0;">
-    FAULT RISK:
+    CONTRIBUTION RANK:
     </strong>
     {selected_sensor_result["risk"]}
 
@@ -2491,17 +2562,17 @@ st.html(f"""
 """)
 
 
-st.html("""
-<div style="
-    color:#607780;
-    font-size:.64rem;
-    margin-top:10px;
-">
-Sensor contribution is estimated using occlusion:
-each sensor's recent 30-cycle sequence is perturbed
-and the resulting change in predicted RUL is measured.
-</div>
-""")
+st.caption(
+    "**How to read this chart.** For each sensor, its 30-cycle history is replaced by its own "
+    "average and the LSTM is re-run: effect = RUL(flattened) − RUL(original), in cycles. "
+    "An orange bar (positive effect) means the sensor's recent pattern was pulling the RUL "
+    "estimate toward shorter life; a cyan bar (negative) means it was pushing toward longer "
+    "life. Percentages are each sensor's share of the total absolute effect. The three "
+    "strongest sensors are drawn solid and the selected sensor has a white outline. "
+    "Effects are measured one sensor at a time and do not add up. This shows what the "
+    "model is sensitive to, not that a physical component is faulty. "
+    f"Sensor meanings: {SENSOR_SOURCE}."
+)
 
 
 # ============================================================
@@ -2519,7 +2590,7 @@ st.html("""
 <div class="agent-network">
 
     <div class="agent-network-title">
-    Autonomous Diagnostic Chain
+    Rule-based Diagnostic Chain
     </div>
 
     <div class="agent-network-subtitle">
@@ -2604,9 +2675,10 @@ with a2:
         </div>
 
         <div class="agent-text">
-        The agent examines the strongest
-        model-contributing signals and
-        generates degradation hypotheses.
+        Ranks sensors by their share of the
+        model's sensitivity and writes
+        explainable hypotheses (not fault
+        diagnoses).
         </div>
 
         <div class="agent-evidence">
@@ -2655,9 +2727,9 @@ with a3:
         </div>
 
         <div class="agent-text">
-        Candidate causes are checked against
-        sensor importance and prediction
-        uncertainty before action generation.
+        Each hypothesis is checked on its
+        contribution share and on its effect
+        size relative to the MC Dropout sigma.
         </div>
 
         <div class="agent-evidence">
@@ -2699,9 +2771,9 @@ with a4:
         </div>
 
         <div class="agent-text">
-        The validated machine condition is
-        converted into a maintenance action
-        and priority.
+        Status, interval boundary crossings
+        and verification results set the
+        priority and the recommended action.
         </div>
 
         <div class="agent-evidence">
@@ -2773,7 +2845,7 @@ st.html(f"""
         </div>
 
         <div class="final-pill">
-        SENSOR RISK:
+        CONTRIBUTION RANK:
         <strong>
         {selected_sensor_result["risk"]}
         </strong>
@@ -2926,8 +2998,8 @@ selected_evidence_df.columns = [
     "XAI Contribution",
     "Trend %",
     "Variation",
-    "Risk Score",
-    "Risk"
+    "Share of Effect %",
+    "Rank Tier"
 ]
 
 st.dataframe(
@@ -2949,15 +3021,19 @@ TOP SENSOR EVIDENCE
 
 
 evidence_df = pd.DataFrame(
-    sensor_importance[:5]
-)
-
-evidence_df["sensor"] = (
-    evidence_df["sensor"].str.upper()
-)
-
-evidence_df["importance"] = (
-    evidence_df["importance"].round(4)
+    [
+        {
+            "Rank": e["rank"],
+            "Sensor": e["sensor"].upper(),
+            "Measures": (
+                f"{e['symbol']}: {e['description']}" if e["symbol"] else "n/a"
+            ),
+            "Effect (cycles)": round(e["delta"], 3),
+            "Share %": round(e["share"] * 100, 1),
+            "Tier": e["tier"],
+        }
+        for e in sensor_importance[:5]
+    ]
 )
 
 
@@ -3143,24 +3219,21 @@ with sim_col2:
     st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
     
     if st.button("Generate & Export Maintenance Work Order"):
-        work_order_payload = {
-            "work_order_id": f"WO-AEGIS-{np.random.randint(10000, 99999)}",
-            "engine_id": int(selected_engine),
-            "current_cycle": int(current_cycle),
-            "predicted_rul": float(predicted_rul),
-            "uncertainty": float(uncertainty),
-            "uncertainty_note": "std of MC Dropout samples (cycles)",
-            "mc_passes": int(MC_PASSES),
-            "interval_level": float(DEFAULT_LEVEL),
-            "interval_lower": float(lower),
-            "interval_upper": float(upper),
-            "interval_status": "uncalibrated",
-            "health_status": health,
-            "priority": wo_priority,
-            "recommended_action": wo_action,
-            "primary_fault_signal": top_sensor,
-            "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
+        work_order_payload = build_work_order(
+            selected_engine,
+            current_cycle,
+            analysis,
+            MC_PASSES
+        )
+
+        _wo_problems = validate_work_order(work_order_payload)
+
+        if _wo_problems:
+            st.error(
+                "Work order failed validation: "
+                + "; ".join(_wo_problems)
+            )
+            st.stop()
         
         st.success("Work Order Payload Compiled Successfully!")
         st.json(work_order_payload)
@@ -3168,7 +3241,7 @@ with sim_col2:
         import json
         st.download_button(
             label="📥 Download Work Order JSON",
-            data=json.dumps(work_order_payload, indent=4),
+            data=work_order_json(work_order_payload),
             file_name=f"WO_Engine_{selected_engine}.json",
             mime="application/json"
         )
